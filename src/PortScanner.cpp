@@ -4,14 +4,13 @@
 #include <chrono>
 #include <cctype>
 #include <cstring>
+#include <ctime>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <sstream>
 #include <stdexcept>
 #include <thread>
-#include <cctype>
-#include <cstring>
 
 const std::unordered_map<int, std::string> PortScanner::common_services{
     {20, "FTP-DATA"},
@@ -56,14 +55,16 @@ void PortScanner::set_options(
     const std::string& port_expression,
     int max_threads,
     int timeout_seconds,
-    const std::string& output_file
+    const std::string& output_file,
+    OutputFormat output_format
 )
 {
     target_ = target;
     port_expression_ = port_expression;
-    max_threads_ = std::max(1, max_threads);
-    timeout_seconds_ = std::max(1, timeout_seconds);
+    max_threads_ = (std::max)(1, max_threads);
+    timeout_seconds_ = (std::max)(1, timeout_seconds);
     output_file_ = output_file;
+    output_format_ = output_format;
 }
 
 void PortScanner::start()
@@ -91,16 +92,18 @@ void PortScanner::start()
     open_ports_ = 0;
     closed_ports_ = 0;
     filtered_ports_ = 0;
+    scan_time_ = current_utc_time();
 
-    std::cout << "Simple Port Scanner - Version 2\n";
-    std::cout << "================================\n";
+    std::cout << "Simple Port Scanner - Version 2.1.0\n";
+    std::cout << "====================================\n";
     std::cout << "Target:      " << target_ << " (" << resolved_ip_ << ")\n";
     std::cout << "Ports:       " << total_ports_ << "\n";
     std::cout << "Threads:     " << max_threads_ << "\n";
     std::cout << "Timeout:     " << timeout_seconds_ << " seconds\n";
 
     if (!output_file_.empty()) {
-        std::cout << "CSV output:  " << output_file_ << "\n";
+        std::cout << "Output file: " << output_file_ << "\n";
+        std::cout << "Format:      " << (output_format_ == OutputFormat::Json ? "json" : "csv") << "\n";
     }
 
     std::cout << "\n";
@@ -110,7 +113,7 @@ void PortScanner::run()
 {
     auto start_time = std::chrono::steady_clock::now();
 
-    int worker_count = std::min(max_threads_, std::max(1, total_ports_));
+    int worker_count = (std::min)(max_threads_, (std::max)(1, total_ports_));
     std::vector<std::thread> workers;
     workers.reserve(worker_count);
 
@@ -134,6 +137,9 @@ void PortScanner::run()
 
     if (output_file_.empty()) {
         print_results();
+    }
+    else if (output_format_ == OutputFormat::Json) {
+        write_json();
     }
     else {
         write_csv();
@@ -460,6 +466,20 @@ std::string PortScanner::state_to_string(PortState state) const
     }
 }
 
+std::string PortScanner::state_to_json_string(PortState state) const
+{
+    switch (state) {
+    case PortState::Open:
+        return "open";
+    case PortState::Closed:
+        return "closed";
+    case PortState::Filtered:
+        return "filtered";
+    default:
+        return "unknown";
+    }
+}
+
 void PortScanner::print_results() const
 {
     std::cout << "PORT    STATE       SERVICE           BANNER\n";
@@ -540,4 +560,112 @@ std::string PortScanner::csv_escape(const std::string& value) const
     }
 
     return escaped;
+}
+
+void PortScanner::write_json() const
+{
+    std::ofstream file(output_file_);
+
+    if (!file.is_open()) {
+        std::cerr << "Warning: Could not write JSON file: " << output_file_ << "\n";
+        return;
+    }
+
+    file << "{\n";
+    file << "  \"target\": \"" << json_escape(target_) << "\",\n";
+    file << "  \"scan_time\": \"" << json_escape(scan_time_) << "\",\n";
+    file << "  \"ports_scanned\": " << total_ports_ << ",\n";
+    file << "  \"results\": [\n";
+
+    for (std::size_t i = 0; i < results_.size(); ++i) {
+        const ScanResult& result = results_[i];
+
+        file << "    {\n";
+        file << "      \"port\": " << result.port << ",\n";
+        file << "      \"state\": \"" << json_escape(state_to_json_string(result.state)) << "\",\n";
+        file << "      \"service\": \"" << json_escape(result.service) << "\",\n";
+
+        if (result.banner == "---") {
+            file << "      \"banner\": null\n";
+        }
+        else {
+            file << "      \"banner\": \"" << json_escape(result.banner) << "\"\n";
+        }
+
+        file << "    }";
+
+        if (i + 1 < results_.size()) {
+            file << ",";
+        }
+
+        file << "\n";
+    }
+
+    file << "  ]\n";
+    file << "}\n";
+
+    file.close();
+
+    std::cout << "JSON output written to: " << output_file_ << "\n\n";
+}
+
+std::string PortScanner::json_escape(const std::string& value) const
+{
+    std::string escaped;
+
+    for (unsigned char character : value) {
+        switch (character) {
+        case '"':
+            escaped += "\\\"";
+            break;
+        case '\\':
+            escaped += "\\\\";
+            break;
+        case '\b':
+            escaped += "\\b";
+            break;
+        case '\f':
+            escaped += "\\f";
+            break;
+        case '\n':
+            escaped += "\\n";
+            break;
+        case '\r':
+            escaped += "\\r";
+            break;
+        case '\t':
+            escaped += "\\t";
+            break;
+        default:
+            if (character < 0x20) {
+                std::ostringstream stream;
+                stream << "\\u"
+                       << std::hex
+                       << std::uppercase
+                       << std::setw(4)
+                       << std::setfill('0')
+                       << static_cast<int>(character);
+                escaped += stream.str();
+            }
+            else {
+                escaped += static_cast<char>(character);
+            }
+            break;
+        }
+    }
+
+    return escaped;
+}
+
+std::string PortScanner::current_utc_time() const
+{
+    std::time_t now = std::time(nullptr);
+    std::tm utc_time{};
+
+    gmtime_s(&utc_time, &now);
+
+    std::ostringstream stream;
+    stream << std::put_time(&utc_time, "%Y-%m-%dT%H:%M:%SZ");
+
+    return stream.str();
 }

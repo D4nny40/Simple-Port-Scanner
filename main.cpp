@@ -6,8 +6,8 @@
 
 void print_help()
 {
-    std::cout << "Simple Port Scanner - Version 2\n";
-    std::cout << "================================\n\n";
+    std::cout << "Simple Port Scanner - Version 2.1.0\n";
+    std::cout << "====================================\n\n";
 
     std::cout << "Usage:\n";
     std::cout << "  simplePortScanner.exe [options]\n\n";
@@ -18,16 +18,21 @@ void print_help()
     std::cout << "  -p, --ports <ports>     Ports to scan, e.g. 80, 1-1024, 22,80,443\n";
     std::cout << "  -t, --threads <num>     Number of worker threads\n";
     std::cout << "  -e, --timeout <sec>     Timeout in seconds\n";
-    std::cout << "  -o, --output <file>     Write scan results to a CSV file\n\n";
+    std::cout << "  -o, --output <file>     Write scan results to an output file\n";
+    std::cout << "  --format <format>       Output format: csv or json\n\n";
 
     std::cout << "Examples:\n";
     std::cout << "  simplePortScanner.exe -i 127.0.0.1 -p 1-100\n";
     std::cout << "  simplePortScanner.exe -i 127.0.0.1 -p 22,80,443\n";
     std::cout << "  simplePortScanner.exe -i 127.0.0.1 -p 1-1024 -t 50 -e 3\n";
-    std::cout << "  simplePortScanner.exe -i 127.0.0.1 -p 1-1024 -o results.csv\n\n";
+    std::cout << "  simplePortScanner.exe -i 127.0.0.1 -p 1-1024 -o results.csv\n";
+    std::cout << "  simplePortScanner.exe -i 127.0.0.1 -p 1-1024 -o results.json --format json\n\n";
 
     std::cout << "CSV output format:\n";
     std::cout << "  port,state,service,banner\n\n";
+
+    std::cout << "JSON output contains:\n";
+    std::cout << "  target, scan_time, ports_scanned, results\n\n";
 
     std::cout << "Important:\n";
     std::cout << "  Only scan systems that you own or have permission to test.\n";
@@ -50,6 +55,7 @@ int main(int argc, char* argv[])
     int threads = 100;
     int timeout = 2;
     std::string output_file;
+    OutputFormat output_format = OutputFormat::Csv;
 
     try {
         for (int i = 1; i < argc; ++i) {
@@ -74,6 +80,19 @@ int main(int argc, char* argv[])
             else if (argument == "-o" || argument == "--output") {
                 output_file = require_value(i, argc, argv, argument);
             }
+            else if (argument == "--format") {
+                std::string format = require_value(i, argc, argv, argument);
+
+                if (format == "csv") {
+                    output_format = OutputFormat::Csv;
+                }
+                else if (format == "json") {
+                    output_format = OutputFormat::Json;
+                }
+                else {
+                    throw std::runtime_error("Invalid output format. Use csv or json.");
+                }
+            }
             else {
                 std::cerr << "Unknown option: " << argument << "\n\n";
                 print_help();
@@ -81,8 +100,12 @@ int main(int argc, char* argv[])
             }
         }
 
+        if (output_file.empty() && output_format == OutputFormat::Json) {
+            throw std::runtime_error("JSON output requires an output file. Use -o results.json --format json.");
+        }
+
         PortScanner scanner;
-        scanner.set_options(target, ports, threads, timeout, output_file);
+        scanner.set_options(target, ports, threads, timeout, output_file, output_format);
         scanner.start();
         scanner.run();
     }

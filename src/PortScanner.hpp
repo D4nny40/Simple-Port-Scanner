@@ -23,6 +23,11 @@ enum class PortState {
     Filtered
 };
 
+enum class OutputFormat {
+    Csv,
+    Json
+};
+
 struct ScanResult {
     int port = 0;
     PortState state = PortState::Filtered;
@@ -40,7 +45,8 @@ public:
         const std::string& port_expression,
         int max_threads,
         int timeout_seconds,
-        const std::string& output_file
+        const std::string& output_file,
+        OutputFormat output_format
     );
 
     void start();
@@ -53,6 +59,9 @@ private:
     std::string port_expression_ = "1-1024";
     std::string output_file_;
     std::string resolved_ip_;
+    std::string scan_time_;
+
+    OutputFormat output_format_ = OutputFormat::Csv;
 
     int max_threads_ = 100;
     int timeout_seconds_ = 2;
@@ -87,6 +96,7 @@ private:
 
     std::string service_name(int port) const;
     std::string state_to_string(PortState state) const;
+    std::string state_to_json_string(PortState state) const;
 
     void print_results() const;
     void print_result(const ScanResult& result) const;
@@ -94,6 +104,10 @@ private:
 
     void write_csv() const;
     std::string csv_escape(const std::string& value) const;
+
+    void write_json() const;
+    std::string json_escape(const std::string& value) const;
+    std::string current_utc_time() const;
 };
 
 #endif
