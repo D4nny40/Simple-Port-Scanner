@@ -1,18 +1,19 @@
-﻿#include "PortScanner.hpp"
+#include "PortScanner.hpp"
 
 #include <algorithm>
-#include <array>
 #include <chrono>
 #include <cctype>
 #include <cstring>
+#include <fstream>
 #include <iomanip>
 #include <iostream>
-#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <thread>
+#include <cctype>
+#include <cstring>
 
-const std::unordered_map<std::uint16_t, std::string> PortScanner::known_ports_ = {
+const std::unordered_map<int, std::string> PortScanner::common_services{
     {20, "FTP-DATA"},
     {21, "FTP"},
     {22, "SSH"},
@@ -24,11 +25,9 @@ const std::unordered_map<std::uint16_t, std::string> PortScanner::known_ports_ =
     {80, "HTTP"},
     {110, "POP3"},
     {123, "NTP"},
-    {135, "MS-RPC"},
+    {135, "MSRPC"},
     {139, "NETBIOS"},
     {143, "IMAP"},
-    {161, "SNMP"},
-    {389, "LDAP"},
     {443, "HTTPS"},
     {445, "SMB"},
     {465, "SMTPS"},
@@ -45,64 +44,171 @@ const std::unordered_map<std::uint16_t, std::string> PortScanner::known_ports_ =
     {8080, "HTTP-ALT"}
 };
 
-PortScanner::PortScanner() {
-    WSADATA wsa_data{};
+PortScanner::PortScanner() = default;
 
-    int startup_result = WSAStartup(MAKEWORD(2, 2), &wsa_data);
-
-    if (startup_result != 0) {
-        throw std::runtime_error("WSAStartup failed. WinSock could not be started.");
-    }
-}
-
-PortScanner::~PortScanner() {
-    WSACleanup();
+PortScanner::~PortScanner()
+{
+    stop_winsock();
 }
 
 void PortScanner::set_options(
     const std::string& target,
     const std::string& port_expression,
     int max_threads,
-    int timeout_seconds
-) {
-    if (target.empty()) {
-        throw std::runtime_error("Target cannot be empty.");
-    }
-
-    if (max_threads < 1) {
-        throw std::runtime_error("Threads must be at least 1.");
-    }
-
-    if (timeout_seconds < 1) {
-        throw std::runtime_error("Timeout must be at least 1 second.");
-    }
-
+    int timeout_seconds,
+    const std::string& output_file
+)
+{
     target_ = target;
-    max_threads_ = max_threads;
-    timeout_seconds_ = timeout_seconds;
-
-    parse_ports(port_expression);
-    resolve_target();
+    port_expression_ = port_expression;
+    max_threads_ = std::max(1, max_threads);
+    timeout_seconds_ = std::max(1, timeout_seconds);
+    output_file_ = output_file;
 }
 
-void PortScanner::parse_ports(const std::string& port_expression) {
-    if (port_expression.empty()) {
-        throw std::runtime_error("Port expression cannot be empty.");
-    }
+void PortScanner::start()
+{
+    start_winsock();
+    resolve_target();
 
-    std::string cleaned;
+    std::vector<int> ports = parse_ports(port_expression_);
 
-    for (char c : port_expression) {
-        if (!std::isspace(static_cast<unsigned char>(c))) {
-            cleaned += c;
+    {
+        std::lock_guard<std::mutex> lock(queue_mutex_);
+
+        while (!port_queue_.empty()) {
+            port_queue_.pop();
+        }
+
+        for (int port : ports) {
+            port_queue_.push(port);
         }
     }
 
-    std::stringstream stream(cleaned);
-    std::string token;
-    std::set<int> unique_ports;
+    results_.clear();
 
-    while (std::getline(stream, token, ',')) {
+    total_ports_ = static_cast<int>(ports.size());
+    open_ports_ = 0;
+    closed_ports_ = 0;
+    filtered_ports_ = 0;
+
+    std::cout << "Simple Port Scanner - Version 2\n";
+    std::cout << "================================\n";
+    std::cout << "Target:      " << target_ << " (" << resolved_ip_ << ")\n";
+    std::cout << "Ports:       " << total_ports_ << "\n";
+    std::cout << "Threads:     " << max_threads_ << "\n";
+    std::cout << "Timeout:     " << timeout_seconds_ << " seconds\n";
+
+    if (!output_file_.empty()) {
+        std::cout << "CSV output:  " << output_file_ << "\n";
+    }
+
+    std::cout << "\n";
+}
+
+void PortScanner::run()
+{
+    auto start_time = std::chrono::steady_clock::now();
+
+    int worker_count = std::min(max_threads_, std::max(1, total_ports_));
+    std::vector<std::thread> workers;
+    workers.reserve(worker_count);
+
+    for (int i = 0; i < worker_count; ++i) {
+        workers.emplace_back(&PortScanner::worker_loop, this);
+    }
+
+    for (std::thread& worker : workers) {
+        if (worker.joinable()) {
+            worker.join();
+        }
+    }
+
+    auto end_time = std::chrono::steady_clock::now();
+    std::chrono::duration<double> duration = end_time - start_time;
+
+    std::sort(results_.begin(), results_.end(),
+        [](const ScanResult& left, const ScanResult& right) {
+            return left.port < right.port;
+        });
+
+    if (output_file_.empty()) {
+        print_results();
+    }
+    else {
+        write_csv();
+    }
+
+    print_summary(duration.count());
+}
+
+void PortScanner::start_winsock()
+{
+    if (winsock_started_) {
+        return;
+    }
+
+    WSADATA data{};
+    int result = WSAStartup(MAKEWORD(2, 2), &data);
+
+    if (result != 0) {
+        throw std::runtime_error("WSAStartup failed");
+    }
+
+    winsock_started_ = true;
+}
+
+void PortScanner::stop_winsock()
+{
+    if (winsock_started_) {
+        WSACleanup();
+        winsock_started_ = false;
+    }
+}
+
+void PortScanner::resolve_target()
+{
+    addrinfo hints{};
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_protocol = IPPROTO_TCP;
+
+    addrinfo* result = nullptr;
+    int status = getaddrinfo(target_.c_str(), "0", &hints, &result);
+
+    if (status != 0 || result == nullptr) {
+        throw std::runtime_error("Could not resolve target: " + target_);
+    }
+
+    std::memcpy(&target_address_, result->ai_addr, result->ai_addrlen);
+    target_address_length_ = static_cast<int>(result->ai_addrlen);
+
+    char ip_buffer[INET6_ADDRSTRLEN]{};
+
+    if (result->ai_family == AF_INET) {
+        sockaddr_in* ipv4 = reinterpret_cast<sockaddr_in*>(result->ai_addr);
+        inet_ntop(AF_INET, &(ipv4->sin_addr), ip_buffer, sizeof(ip_buffer));
+    }
+    else if (result->ai_family == AF_INET6) {
+        sockaddr_in6* ipv6 = reinterpret_cast<sockaddr_in6*>(result->ai_addr);
+        inet_ntop(AF_INET6, &(ipv6->sin6_addr), ip_buffer, sizeof(ip_buffer));
+    }
+
+    resolved_ip_ = ip_buffer[0] != '\0' ? ip_buffer : target_;
+
+    freeaddrinfo(result);
+}
+
+std::vector<int> PortScanner::parse_ports(const std::string& expression) const
+{
+    std::vector<int> ports;
+    std::stringstream expression_stream(expression);
+    std::string token;
+
+    while (std::getline(expression_stream, token, ',')) {
+        token.erase(std::remove_if(token.begin(), token.end(),
+            [](unsigned char c) { return std::isspace(c); }), token.end());
+
         if (token.empty()) {
             continue;
         }
@@ -113,11 +219,12 @@ void PortScanner::parse_ports(const std::string& port_expression) {
             int port = std::stoi(token);
 
             if (port < 1 || port > 65535) {
-                throw std::runtime_error("Port number out of range: " + token);
+                throw std::runtime_error("Port out of range: " + token);
             }
 
-            unique_ports.insert(port);
-        } else {
+            ports.push_back(port);
+        }
+        else {
             std::string start_text = token.substr(0, dash_position);
             std::string end_text = token.substr(dash_position + 1);
 
@@ -133,177 +240,84 @@ void PortScanner::parse_ports(const std::string& port_expression) {
             }
 
             for (int port = start_port; port <= end_port; ++port) {
-                unique_ports.insert(port);
+                ports.push_back(port);
             }
         }
     }
 
-    if (unique_ports.empty()) {
-        throw std::runtime_error("No valid ports were provided.");
+    if (ports.empty()) {
+        throw std::runtime_error("No valid ports were provided");
     }
 
-    while (!ports_.empty()) {
-        ports_.pop();
-    }
+    std::sort(ports.begin(), ports.end());
+    ports.erase(std::unique(ports.begin(), ports.end()), ports.end());
 
-    for (int port : unique_ports) {
-        ports_.push(static_cast<std::uint16_t>(port));
-    }
-
-    total_ports_ = static_cast<int>(ports_.size());
+    return ports;
 }
 
-void PortScanner::resolve_target() {
-    addrinfo hints{};
-    hints.ai_family = AF_UNSPEC;
-    hints.ai_socktype = SOCK_STREAM;
-    hints.ai_protocol = IPPROTO_TCP;
+void PortScanner::worker_loop()
+{
+    while (true) {
+        int port = 0;
 
-    addrinfo* result = nullptr;
+        {
+            std::lock_guard<std::mutex> lock(queue_mutex_);
 
-    int resolve_result = getaddrinfo(
-        target_.c_str(),
-        nullptr,
-        &hints,
-        &result
-    );
+            if (port_queue_.empty()) {
+                return;
+            }
 
-    if (resolve_result != 0 || result == nullptr) {
-        throw std::runtime_error("Could not resolve target: " + target_);
-    }
-
-    addrinfo* selected = nullptr;
-
-    for (addrinfo* current = result; current != nullptr; current = current->ai_next) {
-        if (current->ai_family == AF_INET || current->ai_family == AF_INET6) {
-            selected = current;
-            break;
+            port = port_queue_.front();
+            port_queue_.pop();
         }
-    }
 
-    if (selected == nullptr) {
-        freeaddrinfo(result);
-        throw std::runtime_error("No IPv4 or IPv6 address found for target.");
-    }
-
-    std::memcpy(
-        &target_address_,
-        selected->ai_addr,
-        selected->ai_addrlen
-    );
-
-    target_address_length_ = static_cast<int>(selected->ai_addrlen);
-    target_family_ = selected->ai_family;
-
-    char host_buffer[NI_MAXHOST]{};
-
-    int name_result = getnameinfo(
-        reinterpret_cast<sockaddr*>(&target_address_),
-        target_address_length_,
-        host_buffer,
-        NI_MAXHOST,
-        nullptr,
-        0,
-        NI_NUMERICHOST
-    );
-
-    if (name_result == 0) {
-        resolved_ip_ = host_buffer;
-    } else {
-        resolved_ip_ = target_;
-    }
-
-    freeaddrinfo(result);
-}
-
-void PortScanner::start() {
-    std::cout << "\n";
-    std::cout << "Simple Port Scanner - Version 1\n";
-    std::cout << "================================\n";
-    std::cout << "Target:      " << target_ << " (" << resolved_ip_ << ")\n";
-    std::cout << "Ports:       " << total_ports_ << "\n";
-    std::cout << "Threads:     " << max_threads_ << "\n";
-    std::cout << "Timeout:     " << timeout_seconds_ << " seconds\n\n";
-}
-
-void PortScanner::run() {
-    int worker_count = std::min(max_threads_, total_ports_);
-
-    std::vector<std::thread> workers;
-    workers.reserve(worker_count);
-
-    for (int i = 0; i < worker_count; ++i) {
-        workers.emplace_back([this]() {
-            worker_loop();
-        });
-    }
-
-    for (std::thread& worker : workers) {
-        if (worker.joinable()) {
-            worker.join();
-        }
-    }
-
-    std::sort(results_.begin(), results_.end(), [](const ScanResult& a, const ScanResult& b) {
-        return a.port < b.port;
-    });
-
-    std::cout << std::left
-              << std::setw(8) << "PORT"
-              << std::setw(12) << "STATE"
-              << std::setw(18) << "SERVICE"
-              << "BANNER"
-              << "\n";
-
-    std::cout << std::string(70, '-') << "\n";
-
-    for (const ScanResult& result : results_) {
-        print_result(result);
-    }
-
-    print_summary();
-}
-
-bool PortScanner::pop_next_port(std::uint16_t& port) {
-    std::lock_guard<std::mutex> lock(queue_mutex_);
-
-    if (ports_.empty()) {
-        return false;
-    }
-
-    port = ports_.front();
-    ports_.pop();
-
-    return true;
-}
-
-void PortScanner::worker_loop() {
-    std::uint16_t port = 0;
-
-    while (pop_next_port(port)) {
         ScanResult result = scan_port(port);
-        store_result(result);
+
+        {
+            std::lock_guard<std::mutex> lock(result_mutex_);
+
+            results_.push_back(result);
+
+            if (result.state == PortState::Open) {
+                ++open_ports_;
+            }
+            else if (result.state == PortState::Closed) {
+                ++closed_ports_;
+            }
+            else {
+                ++filtered_ports_;
+            }
+        }
     }
 }
 
-PortScanner::ScanResult PortScanner::scan_port(std::uint16_t port) {
-    SOCKET socket_handle = socket(target_family_, SOCK_STREAM, IPPROTO_TCP);
+ScanResult PortScanner::scan_port(int port) const
+{
+    ScanResult result;
+    result.port = port;
+    result.service = service_name(port);
+    result.banner = "---";
+
+    sockaddr_storage address = target_address_;
+
+    if (address.ss_family == AF_INET) {
+        sockaddr_in* ipv4 = reinterpret_cast<sockaddr_in*>(&address);
+        ipv4->sin_port = htons(static_cast<u_short>(port));
+    }
+    else if (address.ss_family == AF_INET6) {
+        sockaddr_in6* ipv6 = reinterpret_cast<sockaddr_in6*>(&address);
+        ipv6->sin6_port = htons(static_cast<u_short>(port));
+    }
+    else {
+        result.state = PortState::Filtered;
+        return result;
+    }
+
+    SOCKET socket_handle = socket(address.ss_family, SOCK_STREAM, IPPROTO_TCP);
 
     if (socket_handle == INVALID_SOCKET) {
-        return {port, PortState::Filtered, service_name(port), "---"};
-    }
-
-    sockaddr_storage endpoint = target_address_;
-
-    if (endpoint.ss_family == AF_INET) {
-        auto* ipv4 = reinterpret_cast<sockaddr_in*>(&endpoint);
-        ipv4->sin_port = htons(port);
-    } else if (endpoint.ss_family == AF_INET6) {
-        auto* ipv6 = reinterpret_cast<sockaddr_in6*>(&endpoint);
-        ipv6->sin6_port = htons(port);
-    } else {
-        closesocket(socket_handle);
-        return {port, PortState::Filtered, service_name(port), "---"};
+        result.state = PortState::Filtered;
+        return result;
     }
 
     u_long non_blocking = 1;
@@ -311,141 +325,155 @@ PortScanner::ScanResult PortScanner::scan_port(std::uint16_t port) {
 
     int connect_result = connect(
         socket_handle,
-        reinterpret_cast<sockaddr*>(&endpoint),
+        reinterpret_cast<sockaddr*>(&address),
         target_address_length_
     );
 
-    if (connect_result == 0) {
-        std::string banner = grab_banner(socket_handle);
-        closesocket(socket_handle);
-        return {port, PortState::Open, service_name(port), banner};
-    }
+    if (connect_result == SOCKET_ERROR) {
+        int error = WSAGetLastError();
 
-    int connect_error = WSAGetLastError();
-
-    if (
-        connect_error != WSAEWOULDBLOCK &&
-        connect_error != WSAEINPROGRESS &&
-        connect_error != WSAEINVAL
-    ) {
-        closesocket(socket_handle);
-
-        if (connect_error == WSAECONNREFUSED) {
-            return {port, PortState::Closed, service_name(port), "---"};
+        if (error != WSAEWOULDBLOCK && error != WSAEINPROGRESS && error != WSAEINVAL) {
+            result.state = PortState::Closed;
+            closesocket(socket_handle);
+            return result;
         }
-
-        return {port, PortState::Filtered, service_name(port), "---"};
     }
 
     fd_set write_set;
+    fd_set error_set;
+
     FD_ZERO(&write_set);
+    FD_ZERO(&error_set);
+
     FD_SET(socket_handle, &write_set);
+    FD_SET(socket_handle, &error_set);
 
     timeval timeout{};
     timeout.tv_sec = timeout_seconds_;
     timeout.tv_usec = 0;
 
-    int select_result = select(
-        0,
-        nullptr,
-        &write_set,
-        nullptr,
-        &timeout
-    );
+    int select_result = select(0, nullptr, &write_set, &error_set, &timeout);
 
-    if (select_result == 0) {
-        closesocket(socket_handle);
-        return {port, PortState::Filtered, service_name(port), "---"};
+    if (select_result > 0) {
+        int socket_error = 0;
+        int socket_error_size = sizeof(socket_error);
+
+        getsockopt(
+            socket_handle,
+            SOL_SOCKET,
+            SO_ERROR,
+            reinterpret_cast<char*>(&socket_error),
+            &socket_error_size
+        );
+
+        if (socket_error == 0) {
+            result.state = PortState::Open;
+            result.banner = grab_banner(socket_handle);
+        }
+        else {
+            result.state = PortState::Closed;
+        }
     }
-
-    if (select_result == SOCKET_ERROR) {
-        closesocket(socket_handle);
-        return {port, PortState::Filtered, service_name(port), "---"};
+    else if (select_result == 0) {
+        result.state = PortState::Filtered;
     }
-
-    int socket_error = 0;
-    int socket_error_length = sizeof(socket_error);
-
-    getsockopt(
-        socket_handle,
-        SOL_SOCKET,
-        SO_ERROR,
-        reinterpret_cast<char*>(&socket_error),
-        &socket_error_length
-    );
-
-    if (socket_error == 0) {
-        std::string banner = grab_banner(socket_handle);
-        closesocket(socket_handle);
-        return {port, PortState::Open, service_name(port), banner};
+    else {
+        result.state = PortState::Filtered;
     }
 
     closesocket(socket_handle);
-
-    if (socket_error == WSAECONNREFUSED) {
-        return {port, PortState::Closed, service_name(port), "---"};
-    }
-
-    return {port, PortState::Filtered, service_name(port), "---"};
+    return result;
 }
 
-std::string PortScanner::grab_banner(SOCKET socket_handle) {
+std::string PortScanner::grab_banner(SOCKET socket_handle) const
+{
     fd_set read_set;
     FD_ZERO(&read_set);
     FD_SET(socket_handle, &read_set);
 
     timeval timeout{};
-    timeout.tv_sec = banner_timeout_seconds_;
+    timeout.tv_sec = 1;
     timeout.tv_usec = 0;
 
-    int select_result = select(
-        0,
-        &read_set,
-        nullptr,
-        nullptr,
-        &timeout
-    );
+    int select_result = select(0, &read_set, nullptr, nullptr, &timeout);
 
     if (select_result <= 0) {
         return "---";
     }
 
-    std::array<char, 256> buffer{};
-
-    int bytes_received = recv(
-        socket_handle,
-        buffer.data(),
-        static_cast<int>(buffer.size()) - 1,
-        0
-    );
+    char buffer[256]{};
+    int bytes_received = recv(socket_handle, buffer, sizeof(buffer) - 1, 0);
 
     if (bytes_received <= 0) {
         return "---";
     }
 
-    std::string raw_banner(buffer.data(), bytes_received);
-    return clean_banner(raw_banner);
+    return clean_banner(std::string(buffer, bytes_received));
 }
 
-void PortScanner::store_result(const ScanResult& result) {
-    std::lock_guard<std::mutex> lock(results_mutex_);
+std::string PortScanner::clean_banner(const std::string& banner) const
+{
+    std::string cleaned;
 
-    results_.push_back(result);
+    for (char character : banner) {
+        if (character == '\r' || character == '\n' || character == '\t') {
+            cleaned += ' ';
+        }
+        else if (std::isprint(static_cast<unsigned char>(character))) {
+            cleaned += character;
+        }
+    }
 
-    switch (result.state) {
-        case PortState::Open:
-            ++open_ports_;
-            break;
-        case PortState::Closed:
-            ++closed_ports_;
-            break;
-        case PortState::Filtered:
-            ++filtered_ports_;
-            break;
+    while (!cleaned.empty() && cleaned.back() == ' ') {
+        cleaned.pop_back();
+    }
+
+    if (cleaned.empty()) {
+        return "---";
+    }
+
+    return cleaned;
+}
+
+std::string PortScanner::service_name(int port) const
+{
+    auto iterator = common_services.find(port);
+
+    if (iterator == common_services.end()) {
+        return "---";
+    }
+
+    return iterator->second;
+}
+
+std::string PortScanner::state_to_string(PortState state) const
+{
+    switch (state) {
+    case PortState::Open:
+        return "OPEN";
+    case PortState::Closed:
+        return "CLOSED";
+    case PortState::Filtered:
+        return "FILTERED";
+    default:
+        return "UNKNOWN";
     }
 }
 
-void PortScanner::print_result(const ScanResult& result) const {
+void PortScanner::print_results() const
+{
+    std::cout << "PORT    STATE       SERVICE           BANNER\n";
+    std::cout << "----------------------------------------------------------------------\n";
+
+    for (const ScanResult& result : results_) {
+        print_result(result);
+    }
+
+    std::cout << "\n";
+}
+
+void PortScanner::print_result(const ScanResult& result) const
+{
     std::cout << std::left
               << std::setw(8) << result.port
               << std::setw(12) << state_to_string(result.state)
@@ -454,59 +482,62 @@ void PortScanner::print_result(const ScanResult& result) const {
               << "\n";
 }
 
-void PortScanner::print_summary() const {
-    std::cout << "\n";
+void PortScanner::print_summary(double duration_seconds) const
+{
     std::cout << "Scan Summary\n";
     std::cout << "============\n";
     std::cout << "Total ports scanned: " << total_ports_ << "\n";
     std::cout << "Open ports:          " << open_ports_ << "\n";
     std::cout << "Closed ports:        " << closed_ports_ << "\n";
     std::cout << "Filtered ports:      " << filtered_ports_ << "\n";
+    std::cout << "Duration:            " << std::fixed << std::setprecision(2)
+              << duration_seconds << " seconds\n";
 }
 
-std::string PortScanner::service_name(std::uint16_t port) const {
-    auto it = known_ports_.find(port);
+void PortScanner::write_csv() const
+{
+    std::ofstream file(output_file_);
 
-    if (it != known_ports_.end()) {
-        return it->second;
+    if (!file.is_open()) {
+        std::cerr << "Warning: Could not write CSV file: " << output_file_ << "\n";
+        return;
     }
 
-    return "---";
-}
+    file << "port,state,service,banner\n";
 
-std::string PortScanner::state_to_string(PortState state) const {
-    switch (state) {
-        case PortState::Open:
-            return "OPEN";
-        case PortState::Closed:
-            return "CLOSED";
-        case PortState::Filtered:
-            return "FILTERED";
-        default:
-            return "UNKNOWN";
+    for (const ScanResult& result : results_) {
+        file << result.port << ","
+             << csv_escape(state_to_string(result.state)) << ","
+             << csv_escape(result.service) << ","
+             << csv_escape(result.banner) << "\n";
     }
+
+    file.close();
+
+    std::cout << "CSV output written to: " << output_file_ << "\n\n";
 }
 
-std::string PortScanner::clean_banner(const std::string& raw_banner) const {
-    std::string cleaned;
+std::string PortScanner::csv_escape(const std::string& value) const
+{
+    bool must_quote = false;
+    std::string escaped;
 
-    for (char c : raw_banner) {
-        unsigned char value = static_cast<unsigned char>(c);
+    for (char character : value) {
+        if (character == '"' || character == ',' || character == '\n' || character == '\r') {
+            must_quote = true;
+        }
 
-        if (c == '\r' || c == '\n' || c == '\t') {
-            cleaned += ' ';
-        } else if (std::isprint(value)) {
-            cleaned += c;
+        if (character == '"') {
+            escaped += "\"\"";
+        }
+        else {
+            escaped += character;
         }
     }
 
-    while (cleaned.find("  ") != std::string::npos) {
-        cleaned.erase(cleaned.find("  "), 1);
+    if (must_quote) {
+        return "\"" + escaped + "\"";
     }
 
-    if (cleaned.empty()) {
-        return "---";
-    }
-
-    return cleaned;
+    return escaped;
 }
