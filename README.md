@@ -40,7 +40,13 @@ To utilise Version 2.0.0's feature you can use this command (change depending on
 ```
 .\Debug\simplePortScanner.exe -i 127.0.0.1 -p 1-100 -o results.csv
 ```
-Which will give you the results in a csv file in the build directory.
+Which will give you the results in a .csv file in the build directory. 
+
+To utilise Version 2.1.0's feature you can use a commmand like this (change depending on IP):
+```
+.\Debug\simplePortScanner.exe -i 127.0.0.1 -p 1-100 -o output.json --format json
+```
+This will output the scan results as a .json file in the build directory.
 
 ## Version History
 
@@ -60,9 +66,16 @@ Which will give you the results in a csv file in the build directory.
 - Updated help menu examples
 - Updated README usage instructions
 
+### V2.1.0 - JSON Exportation Feature Release
+- Added  `-o output.json` which will allow the scan to be output to a `.json` file in the build directory.
+- Added  `--output output.json` for long form options.
+- Added  `--format json` allowing it to be distinguished over CSV.
+- Updated help menu examples
+- Updated README usage instructions
+
 ## Potential Improvements in the future
 
-- Output Improvement and Potential Exportation for later analysis. - Partial Completed (Will be complete once JSON Exportation is released)
+- Output Improvement and Potential Exportation for later analysis. - **Completed**
 - Utilising the original idea's design by using Boost.
 - Better Scanner behaviour using async
 - Progress Indication
