@@ -1,6 +1,12 @@
 # Simple-Port-Scanner
 This program is a Windows command-line TCP port scanner written in C++.  Its job is to check a target machine and identify selected TCP ports states. It also attempts basic banner grabbing from open services.  This version is designed for portfoilo and should not be used for offensive purposes. 
 
+## Current Version
+
+V2.0.0 - CSV Output Release
+
+Version 2 adds CSV output using `-o output.csv`.
+
 ## Prerequisites/Requirements to use this project and why they are needed
 | Requirement | Why it is needed |
 |---|---|
@@ -28,11 +34,36 @@ After building, it should be located in Build/debug/simplePortScanner.exe. To ge
 ```
 .\Debug\simplePortScanner.exe --help
 ```
-Which will give you all the help you need to use it.
+Which will give you all the help you need to use the scanner.
+
+To utilise Version 2.0.0's feature you can use this command (change depending on IP):
+```
+.\Debug\simplePortScanner.exe -i 127.0.0.1 -p 1-100 -o results.csv
+```
+Which will give you the results in a csv file in the build directory.
+
+## Version History
+
+### V1.0.0 - Initial Working Release
+- Created the first working Windows TCP port scanner
+- Added target selection
+- Added port range parsing
+- Added open, closed, and filtered state detection
+- Added basic service-name identification
+- Added passive banner grabbing
+- Added multi-threaded scanning
+
+### V2.0.0 - CSV Output Release
+- Added `-o output.csv` which will allow the scan to be output to a `.csv` file in the build directory.
+- Added `--output output.csv` for long form options
+- Added CSV output format: `port,state,service,banner`
+- Added CSV escaping for commas, quotes, and newlines in banner text
+- Updated help menu examples
+- Updated README usage instructions
 
 ## Potential Improvements in the future
 
-- Output Improvement and Potential Exportation for later analysis.
+- Output Improvement and Potential Exportation for later analysis. - Partial Completed (Will be complete once JSON Exportation is released)
 - Utilising the original idea's design by using Boost.
 - Better Scanner behaviour using async
 - Progress Indication
