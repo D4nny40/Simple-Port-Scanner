@@ -3,9 +3,9 @@ This program is a Windows command-line TCP port scanner written in C++.  Its job
 
 ## Current Version
 
-V2.0.0 - CSV Output Release
+V2.1.0 - CSV Output Release
 
-Version 2 adds CSV output using `-o output.csv`.
+Version 2.1.0 adds JSON output using `-o output.json`.
 
 ## Prerequisites/Requirements to use this project and why they are needed
 | Requirement | Why it is needed |
