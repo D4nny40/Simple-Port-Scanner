@@ -45,7 +45,6 @@ Which will give you the results in a csv file in the build directory.
 ## Version History
 
 ### V1.0.0 - Initial Working Release
-- Created the first working Windows TCP port scanner
 - Added target selection
 - Added port range parsing
 - Added open, closed, and filtered state detection
