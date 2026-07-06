@@ -6,7 +6,7 @@
 
 void print_help()
 {
-    std::cout << "Simple Port Scanner - Version 2.1.0\n";
+    std::cout << "Simple Port Scanner - Version 3.0.0\n";
     std::cout << "====================================\n\n";
 
     std::cout << "Usage:\n";
@@ -26,13 +26,9 @@ void print_help()
     std::cout << "  simplePortScanner.exe -i 127.0.0.1 -p 22,80,443\n";
     std::cout << "  simplePortScanner.exe -i 127.0.0.1 -p 1-1024 -t 50 -e 3\n";
     std::cout << "  simplePortScanner.exe -i 127.0.0.1 -p 1-1024 -o results.csv\n";
-    std::cout << "  simplePortScanner.exe -i 127.0.0.1 -p 1-1024 -o results.json --format json\n\n";
+    std::cout << "  simplePortScanner.exe -i 127.0.0.1 -p 1-1024 -o output.json --format json\n\n";
 
-    std::cout << "CSV output format:\n";
-    std::cout << "  port,state,service,banner\n\n";
-
-    std::cout << "JSON output contains:\n";
-    std::cout << "  target, scan_time, ports_scanned, results\n\n";
+    std::cout << "Version 3.0.0 adds a progress indicator during scanning.\n\n";
 
     std::cout << "Important:\n";
     std::cout << "  Only scan systems that you own or have permission to test.\n";
@@ -101,7 +97,7 @@ int main(int argc, char* argv[])
         }
 
         if (output_file.empty() && output_format == OutputFormat::Json) {
-            throw std::runtime_error("JSON output requires an output file. Use -o results.json --format json.");
+            throw std::runtime_error("JSON output requires an output file. Use -o output.json --format json.");
         }
 
         PortScanner scanner;

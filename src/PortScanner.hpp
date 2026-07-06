@@ -10,6 +10,7 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 
+#include <atomic>
 #include <cstdint>
 #include <mutex>
 #include <queue>
@@ -78,9 +79,13 @@ private:
     int open_ports_ = 0;
     int closed_ports_ = 0;
     int filtered_ports_ = 0;
+    int progress_update_interval_ = 10;
+
+    std::atomic<int> scanned_ports_{0};
 
     std::mutex queue_mutex_;
     std::mutex result_mutex_;
+    std::mutex progress_mutex_;
 
     void start_winsock();
     void stop_winsock();
@@ -101,6 +106,8 @@ private:
     void print_results() const;
     void print_result(const ScanResult& result) const;
     void print_summary(double duration_seconds) const;
+
+    void update_progress(int scanned_count);
 
     void write_csv() const;
     std::string csv_escape(const std::string& value) const;

@@ -92,14 +92,17 @@ void PortScanner::start()
     open_ports_ = 0;
     closed_ports_ = 0;
     filtered_ports_ = 0;
+    scanned_ports_ = 0;
+    progress_update_interval_ = (std::max)(10, total_ports_ / 100);
     scan_time_ = current_utc_time();
 
-    std::cout << "Simple Port Scanner - Version 2.1.0\n";
+    std::cout << "Simple Port Scanner - Version 3.0.0\n";
     std::cout << "====================================\n";
     std::cout << "Target:      " << target_ << " (" << resolved_ip_ << ")\n";
     std::cout << "Ports:       " << total_ports_ << "\n";
     std::cout << "Threads:     " << max_threads_ << "\n";
     std::cout << "Timeout:     " << timeout_seconds_ << " seconds\n";
+    std::cout << "Progress:    enabled\n";
 
     if (!output_file_.empty()) {
         std::cout << "Output file: " << output_file_ << "\n";
@@ -112,6 +115,8 @@ void PortScanner::start()
 void PortScanner::run()
 {
     auto start_time = std::chrono::steady_clock::now();
+
+    std::cout << "Progress: 0/" << total_ports_ << " (0.0%)" << std::flush;
 
     int worker_count = (std::min)(max_threads_, (std::max)(1, total_ports_));
     std::vector<std::thread> workers;
@@ -212,8 +217,7 @@ std::vector<int> PortScanner::parse_ports(const std::string& expression) const
     std::string token;
 
     while (std::getline(expression_stream, token, ',')) {
-        token.erase(std::remove_if(token.begin(), token.end(),
-            [](unsigned char c) { return std::isspace(c); }), token.end());
+        token.erase(std::remove_if(token.begin(), token.end(), ::isspace), token.end());
 
         if (token.empty()) {
             continue;
@@ -293,6 +297,12 @@ void PortScanner::worker_loop()
             else {
                 ++filtered_ports_;
             }
+        }
+
+        int scanned_count = ++scanned_ports_;
+
+        if (scanned_count == total_ports_ || scanned_count % progress_update_interval_ == 0) {
+            update_progress(scanned_count);
         }
     }
 }
@@ -477,6 +487,26 @@ std::string PortScanner::state_to_json_string(PortState state) const
         return "filtered";
     default:
         return "unknown";
+    }
+}
+
+void PortScanner::update_progress(int scanned_count)
+{
+    std::lock_guard<std::mutex> lock(progress_mutex_);
+
+    double percentage = 0.0;
+
+    if (total_ports_ > 0) {
+        percentage = (static_cast<double>(scanned_count) / static_cast<double>(total_ports_)) * 100.0;
+    }
+
+    std::cout << "\rProgress: "
+              << scanned_count << "/" << total_ports_
+              << " (" << std::fixed << std::setprecision(1) << percentage << "%)"
+              << std::flush;
+
+    if (scanned_count == total_ports_) {
+        std::cout << "\n\n";
     }
 }
 
