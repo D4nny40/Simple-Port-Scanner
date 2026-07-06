@@ -96,7 +96,7 @@ void PortScanner::start()
     progress_update_interval_ = (std::max)(10, total_ports_ / 100);
     scan_time_ = current_utc_time();
 
-    std::cout << "Simple Port Scanner - Version 3.0.0\n";
+    std::cout << "Simple Port Scanner - Version 2.2.0\n";
     std::cout << "====================================\n";
     std::cout << "Target:      " << target_ << " (" << resolved_ip_ << ")\n";
     std::cout << "Ports:       " << total_ports_ << "\n";
