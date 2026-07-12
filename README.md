@@ -79,9 +79,9 @@ This will output the scan results as a .json file in the build directory.
 ## Potential Improvements in the future
 
 - Output Improvement and Potential Exportation for later analysis. - **Completed**
+- Progress Indication - **Completed**
 - Utilising the original idea's design by using Boost.
 - Better Scanner behaviour using async
-- Progress Indication
 - Multiple Host Scanning capabilites
 - Service Version Detection
 - Potential GUI Implementation
